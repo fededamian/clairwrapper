@@ -1,0 +1,252 @@
+#!/bin/bash
+
+# =========================================================================== #
+#        Name: Clair Demo                                                     #
+#                                                                             #
+#      Author: Federico Damián Camarda                                        #
+#                                                                             #
+# Description: This script contains a series of functions to obtain the       #
+#              resources needed to execute a docker image scan with Clair     # 
+#                                                                             #
+#              https://github.com/coreos/clair                                #
+#                                                                             #
+#              The steps to do it are the following:                          #
+#                                                                             #
+#              1. Run the source command with the script to have the          #
+#                 functions available in your shell.                          #
+#                                                                             #
+#                    source clair-demo.sh                                     #
+#                                                                             #
+#              2. To execute the scan and get an HTML report, use:            #
+#                                                                             #
+#                    run_clairctl IMAGE                                       #
+#                                                                             #
+#              3. To execute the scan and get the results in the terminal and #
+#                 also in a json file, use:                                   #
+#                                                                             #
+#                    run_clair-scanner IMAGE                                  #
+# =========================================================================== #
+
+# =========================================================================== #
+#                                  HELPERS                                    #
+#                                                                             #
+#                             Helper functions                                #
+# =========================================================================== #
+
+function check_binary
+{
+    # First argument is the binary name.
+    if [[ $1 == "" ]]; then
+
+        # The function needs one argument.
+        echo "This function needs a filname as an argument."
+        return 3
+
+    else
+    
+        # Set the bianry name.
+        NAME=$1
+
+    fi
+
+    # Code 1. A directory with the binary name exists, we cannot continue.
+    if [[ "$(find . -maxdepth 1 -type d | grep "^./$NAME$" )" != "" ]]; then
+
+        echo "There is already a directory in this path named \"$NAME\"."
+        echo "Rename it to get the binary."
+        return 2
+
+    # Code 1. The binary file is present
+    elif [[ "$(find . -maxdepth 1 -type f | grep $NAME)" != "" ]]; then
+
+        return 1
+
+    # Code 0. Binary does not exist.
+    else
+
+        return 0
+
+    fi
+}
+
+# =========================================================================== #
+#                                START CLAIR                                  #
+#                                                                             #
+#         Start Clair Engine and PotgreSQL Database Docker Containers         #
+# =========================================================================== #
+
+function start_clair
+{
+    # If the Clair Postgres DB container exists, start it. Otherwise use the
+    # run command.
+    if [[ "$(docker ps -a | grep clair-db)" != "" ]]; then
+
+        # Start the Clair Postgres DB container.
+        docker start clair-db
+
+    else
+
+        # Run the Clair Postgres DB.
+        docker run -p 5432:5432       \
+                   -d --name clair-db \
+                   arminc/clair-db
+    fi
+
+    # Set a timeout.
+    sleep 5
+
+
+    # If the Clair Engine container exists, start it. Otherwise use the run
+    # command.
+    if [[ "$(docker ps -a | grep clair-engine)" != "" ]]; then
+
+        # Start the Clair Engine container.
+        docker start clair-engine
+
+    else
+
+        # Start Clair Engine container.
+        docker run -p 6060:6060              \
+                   -p 6061:6061              \
+                   --link clair-db:postgres  \
+                   -d --name clair-engine    \
+                   arminc/clair-local-scan:v2.0.1
+
+    fi
+}
+
+# =========================================================================== #
+#                                  CLAIRCTL                                   #
+#                                                                             #
+#          Run the Clairctl client (binary) to scan an image using            #
+#                   Clair and generate an HTML report                         #
+# =========================================================================== #
+
+function set_clairctl
+{
+    # Obtain the binary from the project site.
+    wget https://github.com/jgsqware/clairctl/releases/download/v1.2.8/clairctl-darwin-amd64
+
+    # Rename the binary.
+    mv clairctl-darwin-amd64 clairctl
+
+    # Give execution permissions to the binary.
+    chmod +x clairctl
+
+ }
+
+function run_clairctl
+{
+    # If the Clair images are not running, start them.
+    if [[ "$(docker ps | grep clair-db)"     == "" ]] || \
+       [[ "$(docker ps | grep clair-engine)" == "" ]] ; then
+
+        # Start the Clair containers.
+        start_clair
+
+    fi
+
+    # Check the presence of the binary.
+    check_binary clairctl
+    CHECK=$?
+
+    # If the tool is not present in the current directory, get it.
+    if [ $CHECK -eq 0 ]; then
+
+        # Set the clairctl tool.
+        set_clairctl
+
+    # If there was an error return.
+    elif [ $CHECK -eq 2 ]; then
+
+        # An error ocurred and we cannot continue.
+        return
+
+    fi
+
+    # The image is passed as the first argument of the function.
+    IMAGE="$1"
+
+    # Check conectivity with the Clair API.
+    ./clairctl health
+
+    # If an image was provided run the scan.
+    if [[ "$IMAGE" != "" ]]; then
+
+        # Push a local image to Clair.
+        ./clairctl push --local "$IMAGE"
+
+        # Request Clair to analyze the image.
+        ./clairctl analyze --local "$IMAGE"
+
+        # Generate the HTML report.
+        ./clairctl report --local "$IMAGE"
+
+    fi
+}
+
+# =========================================================================== #
+#                               CLAIR-SCANNER                                 #
+#                                                                             #
+#         Run the Clair-scanner client (binary) to scan an image using        #
+#            Clair and see the report on the terminal and JSON file           #
+# =========================================================================== #
+
+function set_clair-scanner
+{
+    # Obtain the binary from the project site.
+    wget https://github.com/arminc/clair-scanner/releases/download/v8/clair-scanner_darwin_amd64
+
+    # Rename the binary.
+    mv clair-scanner_darwin_amd64 clair-scanner
+
+    # Give execution permissions to the binary.
+    chmod +x clair-scanner
+}
+
+function run_clair-scanner
+{
+    # If the Clair images are not running, start them.
+    if [[ "$(docker ps | grep clair-db)"     == "" ]] || \
+       [[ "$(docker ps | grep clair-engine)" == "" ]] ; then
+
+        # Start the Clair containers.
+        start_clair
+
+    fi
+
+    # Check the presence of the binary.
+    check_binary clair-scanner
+    CHECK=$?
+    
+    # If the tool is not present in the current directory, get it.
+    if [ $CHECK -eq 0 ]; then
+
+        # Set the clair-scanner tool.
+        set_clair-scanner
+
+    # If there was an error return.
+    elif [ $CHECK -eq 2 ]; then
+
+        # An error ocurred and we cannot continue.
+        return
+
+    fi
+
+    # Get my computer IP address.
+    IP="$(ifconfig en0 | grep inet\ | cut -d ' ' -f 2)"
+
+    # The image is passed as the first argument of the function.
+    IMAGE="$1"
+
+    # If an image was provided run the scan.
+    if [[ "$IMAGE" != "" ]]; then
+
+        # Run the Clair-scanner binary to use get the terminal and JSON report with
+        # a threshold of High for unapproved vulnerabilities.
+        ./clair-scanner --ip "$IP"       \
+                        -t   High        \
+                        -r   ./clair-report.json \
+                        "$IMAGE"
+    fi
+}
